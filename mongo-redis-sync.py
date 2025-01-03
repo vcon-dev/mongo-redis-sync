@@ -7,6 +7,10 @@ import threading
 import redis
 from pymongo import MongoClient
 from dotenv import load_dotenv
+from redis.commands.json.path import Path
+import json
+import logging
+
 
 # 1. Load environment variables
 load_dotenv()
@@ -19,43 +23,45 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 3. Read Redis configuration from environment or use defaults
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_DB = int(os.getenv("REDIS_DB", 0))
 
 # 4. Read MongoDB configuration from environment or use defaults
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-MONGO_DB = os.getenv("MONGO_DB", "mydatabase")
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://mongo:27017")
+MONGO_DB = os.getenv("MONGO_DB", "conserver")
 MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "vcon")
 
+
+logger = logging.getLogger(__name__)
 
 def scan_and_sync_redis_to_mongo(redis_client, mongo_collection):
     """
     Scans the Redis keyspace for keys starting with 'vcon:'
     and inserts/updates them in the given MongoDB collection.
+    This version uses RedisJSON for handling JSON data in Redis.
     """
-    logger.info("Starting one-time scan of keys 'vcon:*'...")
+    logger.info("Starting one-time scan of keys 'vcon:*' using RedisJSON...")
     cursor = 0
     while True:
         cursor, keys = redis_client.scan(cursor=cursor, match="vcon:*", count=100)
         for key in keys:
             key_str = key.decode("utf-8")
             try:
-                value = redis_client.get(key_str)
+                # Fetch the value as JSON from Redis
+                value = redis_client.json().get(key_str, Path.root_path())
+                logger.info(f"Read value from REDIS: {value}")
+                logger.info("Type of value: " + str(type(value)))
                 if value is not None:
-                    # Attempt to parse as JSON; if not valid JSON, store raw
-                    try:
-                        data = json.loads(value)
-                    except json.JSONDecodeError:
-                        data = {"raw": value.decode("utf-8")}
-
                     # Upsert the document by using the Redis key as the _id
                     mongo_collection.replace_one(
                         {"_id": key_str},
-                        {"_id": key_str, "data": data},
+                        value,
                         upsert=True
                     )
                     logger.info(f"Synchronized Redis key '{key_str}' with MongoDB.")
+                else:
+                    logger.warning(f"Redis key '{key_str}' has no JSON value.")
             except Exception as e:
                 logger.error(f"Error reading or syncing key '{key_str}' - {str(e)}")
 
@@ -64,7 +70,6 @@ def scan_and_sync_redis_to_mongo(redis_client, mongo_collection):
             break
 
     logger.info("Finished scanning all 'vcon:*' keys.")
-
 
 def listen_for_redis_keyspace_events(redis_client, mongo_collection, redis_db=0):
     """
@@ -86,19 +91,13 @@ def listen_for_redis_keyspace_events(redis_client, mongo_collection, redis_db=0)
                 key_name = channel.split(":", 1)[1]
 
                 try:
-                    value = redis_client.get(key_name)
-                    if value is not None:
-                        try:
-                            doc_data = json.loads(value)
-                        except json.JSONDecodeError:
-                            doc_data = {"raw": value.decode("utf-8")}
-
-                        mongo_collection.replace_one(
-                            {"_id": key_name},
-                            {"_id": key_name, "data": doc_data},
-                            upsert=True
-                        )
-                        logger.info(f"[Keyspace Event] Updated MongoDB for '{key_name}'")
+                    value = redis_client.json().get(key_name, Path.root_path())
+                    mongo_collection.replace_one(
+                        {"_id": key_name},
+                        value,
+                        upsert=True
+                    )
+                    logger.info(f"[Keyspace Event] Updated MongoDB for '{key_name}'")
                 except Exception as e:
                     logger.error(f"Error handling key '{key_name}' event - {str(e)}")
 

@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  mongo-redis-sync:
+    build: .
+    container_name: mongo-redis-sync
+    environment:
+      REDIS_HOST: "${REDIS_HOST:-redis}"             # Default to "redis"
+      REDIS_PORT: "${REDIS_PORT:-6379}"             # Default to 6379
+      REDIS_DB: "${REDIS_DB:-0}"                    # Default to 0
+      MONGO_URI: "${MONGO_URI:-mongodb://root:example@mongo:27017}" # Default MongoDB URI
+      MONGO_DB: "${MONGO_DB:-conserver}"            # Default to "conserver"
+      MONGO_COLLECTION: "${MONGO_COLLECTION:-vcons}" # Default to "vcons"
+    networks:
+      - conserver
+# docker-compose-1.yml
+networks:
+  conserver:
+    external: true
